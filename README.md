@@ -34,6 +34,8 @@ pages → (3) required number of volumes → (4) maximum file size → (5) aggre
 
 ### Windows
 
+> New users: see **`START_HERE.txt`** for short, plain-language instructions.
+
 1. Install **Python 3.10 or newer** from <https://www.python.org/downloads/> (tick *Add python.exe to PATH*).
 2. Optional: install Ghostscript (see below) for an extra compression strategy.
 3. Double-click **`run.bat`**. The first start creates a virtual environment and installs the
