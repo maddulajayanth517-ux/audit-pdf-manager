@@ -255,10 +255,18 @@ memory is low):
   attempts are cancelled.
 * Page fingerprints are read in the background, and all volumes are validated in parallel.
 * **Fine-tuning to the limit:** compression steps are coarse, so the first step that fits can land
-  well below the limit (e.g. 3.1 MB for a 5 MB limit). If a compressed volume uses less than 92% of the
-  limit, the app tries settings between that step and the gentler one that was too big (higher DPI and
-  JPEG quality), aiming at about 97% of the limit. It keeps the sharpest result that still fits, so
-  volumes typically end up at 95–99% of the limit. Every candidate is a real file, so the limit is never exceeded.
+  well below the limit (e.g. 3.1 MB for a 5 MB limit). **Every compressed volume is tuned to end up
+  within 0.2 MB below the limit** (e.g. 4.8–5.0 MB for 5 MB, 19.8–20.0 MB for 20 MB; for limits under
+  2 MB, within 10% of the limit). The app tries, in order:
+  1. settings between that step and the gentler one that was too big (higher DPI and JPEG quality);
+  2. a higher JPEG quality at the same DPI (smaller steps);
+  3. the sharper setting for only a share of the images / pages (the finest steps; needed for large
+     volumes, where one JPEG-quality step can change the size by more than 0.2 MB).
+
+  Every candidate is a real file, so the limit is never exceeded. Volumes that fit **without**
+  compression (original quality, e.g. 3.3 MB for a 5 MB limit) are left as they are: making them
+  bigger would not make them any sharper. Each volume has at most 10 fine-tuning rounds; if they
+  run out, the job log names the closest size that was reached.
 
 The result is the same file a one-by-one search would choose: the real size of every candidate is
 measured, and the gentlest real success wins. On a 16-core PC, a 100 MB report into 3 × 4 MB volumes

@@ -64,10 +64,21 @@ class Strategy:
     quality: Optional[int] = None
     grayscale: bool = False
     gs_preset: Optional[str] = None
+    # Finest size control (fine-tuning only): the first ``alt_share`` per mille of the images / pages
+    # use the sharper ``alt_dpi`` / ``alt_quality``, the rest use ``dpi`` / ``quality``.
+    alt_dpi: Optional[int] = None
+    alt_quality: Optional[int] = None
+    alt_share: Optional[int] = None
 
     @property
     def preserves_text(self) -> bool:
         return self.kind != "raster"
+
+    def settings_for(self, index: int, total: int) -> tuple:
+        """(dpi, quality) for image / page number ``index`` of ``total``."""
+        if self.alt_share and index < self.alt_share * total / 1000:
+            return self.alt_dpi, self.alt_quality
+        return self.dpi, self.quality
 
     @property
     def key(self) -> str:
@@ -80,6 +91,8 @@ class Strategy:
             parts.append("gray")
         if self.gs_preset:
             parts.append(self.gs_preset)
+        if self.alt_share:
+            parts.append(f"mix{self.alt_dpi}-{self.alt_quality}x{self.alt_share}")
         return "_".join(parts)
 
     @property
@@ -91,6 +104,8 @@ class Strategy:
         if self.kind == "ghostscript":
             return f"Ghostscript /{self.gs_preset}"
         tone = ", greyscale" if self.grayscale else ""
+        if self.alt_share:
+            tone += f"; {self.alt_share / 10:.0f}% at {self.alt_dpi} DPI, JPEG {self.alt_quality}"
         if self.kind == "images":
             return f"Image recompression {self.dpi} DPI, JPEG {self.quality}{tone} (text kept)"
         return f"Page rasterisation {self.dpi} DPI, JPEG {self.quality}{tone} (text not searchable)"
@@ -254,8 +269,11 @@ def recompress_images(
     quality: int,
     grayscale: bool,
     is_cancelled: Callable[[], bool] = lambda: False,
+    settings_for: Optional[Callable[[int, int], tuple]] = None,
 ) -> tuple[int, int]:
-    """Downsample / re-encode embedded images in place. Returns (candidates, replaced)."""
+    """Downsample / re-encode embedded images in place. Returns (candidates, replaced).
+
+    ``settings_for(i, n)`` may give image ``i`` of ``n`` its own (dpi, quality) (fine-tuning)."""
     info: dict[int, dict] = {}
     for page in doc:
         page_long_side = max(page.rect.width, page.rect.height)
@@ -270,9 +288,10 @@ def recompress_images(
             rec["disp"] = max(rec["disp"], disp)
 
     candidates = replaced = 0
-    for xref, rec in info.items():
+    for i, (xref, rec) in enumerate(info.items()):
         if is_cancelled():
             raise CancelledError()
+        img_dpi, img_quality = settings_for(i, len(info)) if settings_for else (target_dpi, quality)
         if rec["bpc"] == 1 or rec["w"] < 32 or rec["h"] < 32:
             continue  # bilevel scans (CCITT/JBIG2) are already compact; tiny images are not worth it
         try:
@@ -287,7 +306,7 @@ def recompress_images(
             continue
         candidates += 1
         try:
-            new_data, nw, nh, cs = _encode_image(doc, xref, rec, target_dpi, quality, grayscale)
+            new_data, nw, nh, cs = _encode_image(doc, xref, rec, img_dpi, img_quality, grayscale)
         except Exception:  # noqa: BLE001 - unusual colour spaces etc. are left untouched
             continue
         if new_data is None or len(new_data) >= raw_len * 0.95:
@@ -336,6 +355,7 @@ def rasterize(
     quality: int,
     grayscale: bool,
     is_cancelled: Callable[[], bool] = lambda: False,
+    settings_for: Optional[Callable[[int, int], tuple]] = None,
 ) -> fitz.Document:
     out = fitz.open()
     cs = fitz.csGRAY if grayscale else fitz.csRGB
@@ -344,16 +364,16 @@ def rasterize(
             out.close()
             raise CancelledError()
         rect = page.rect
-        page_dpi = dpi
-        pixels = (rect.width / 72 * dpi) * (rect.height / 72 * dpi)
+        page_dpi, page_quality = settings_for(page.number, base.page_count) if settings_for else (dpi, quality)
+        pixels = (rect.width / 72 * page_dpi) * (rect.height / 72 * page_dpi)
         if pixels > MAX_RASTER_PIXELS:
-            page_dpi = max(10, int(dpi * (MAX_RASTER_PIXELS / pixels) ** 0.5))
+            page_dpi = max(10, int(page_dpi * (MAX_RASTER_PIXELS / pixels) ** 0.5))
         pix = page.get_pixmap(dpi=page_dpi, colorspace=cs, alpha=False)
         mode = "L" if pix.n == 1 else "RGB"
         im = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
         pix = None
         buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=int(quality), optimize=True)
+        im.save(buf, "JPEG", quality=int(page_quality), optimize=True)
         new_page = out.new_page(width=rect.width, height=rect.height)
         new_page.insert_image(new_page.rect, stream=buf.getvalue())
     return out
@@ -403,12 +423,13 @@ def _attempt(
             save_pdf(base, out_path, optimize=True)
         elif st.kind == "images":
             _optimize_structure(base)
-            cands, replaced = recompress_images(base, st.dpi, st.quality, st.grayscale, is_cancelled)
+            cands, replaced = recompress_images(base, st.dpi, st.quality, st.grayscale, is_cancelled,
+                                                st.settings_for)
             extra = {"image_candidates": cands, "images_replaced": replaced}
             apply_toc(base, toc, start, end)
             save_pdf(base, out_path, optimize=True)
         elif st.kind == "raster":
-            out = rasterize(base, st.dpi, st.quality, st.grayscale, is_cancelled)
+            out = rasterize(base, st.dpi, st.quality, st.grayscale, is_cancelled, st.settings_for)
             try:
                 apply_toc(out, toc, start, end)
                 save_pdf(out, out_path, optimize=True)
@@ -449,8 +470,14 @@ _WORKER_DOCS: dict = {}
 SAMPLE_PAGES = 6          # pages used to predict the size of each level
 MIN_PAGES_TO_PREDICT = 16  # smaller volumes are simply tried in full
 PREDICT_MARGIN = 1.35     # also try levels predicted up to 35% above the target (predictions are estimates)
-REFINE_BELOW = 0.92       # fine-tune when the chosen file uses less than 92% of the size limit
-REFINE_GOOD = 0.95        # ... and stop fine-tuning once a file uses at least 95% of it
+SIZE_BAND_BYTES = 200_000  # a compressed volume must end up within 0.2 MB below the limit ...
+SIZE_BAND_FRACTION = 0.10  # ... (or within 10% of it for limits under 2 MB)
+REFINE_ROUNDS = 10         # at most this many fine-tuning rounds per volume
+
+
+def size_band(target_bytes: int) -> int:
+    """How far below the limit a compressed volume may end up (0.2 MB; 10% for small limits)."""
+    return int(min(SIZE_BAND_BYTES, SIZE_BAND_FRACTION * target_bytes))
 
 
 def worker_init(parent_pid: int) -> None:
@@ -725,83 +752,144 @@ def compress_volume(
             if chosen is None and rec and rec["meets"] and not (want_lossless_always and st.kind == "plain"):
                 chosen = rec
 
-    def fine_tune(best: dict) -> dict:
-        """Use more of the size limit: try settings between the chosen step and a gentler one,
-        aiming at ~97% of the limit, and keep the sharpest result that still fits.
+    band = size_band(target_bytes) if target_bytes else 0
+    floor = (target_bytes or 0) - band       # a compressed volume should end up in [floor, limit]
+    q_max, dpi_max = int(cfg.get("jpeg_quality_max", 95)), int(cfg.get("max_dpi", 300))
+    rounds_left = REFINE_ROUNDS
+    n_parallel = min(4, max(1, batch_size)) if pool is not None else 1
 
-        Setting x in [0, 1] moves DPI and JPEG quality from the chosen step (x = 0, fits) towards a
-        gentler step (x = 1). Probe points are aimed by interpolating the sizes already measured;
-        every candidate is a real file, so the limit is never exceeded.
+    def search(best: dict, at: Callable[[float], Strategy], hi_size: Optional[int]) -> None:
+        """Search settings ``at(x)`` for x in (0, 1) for a file inside [floor, limit] and update
+        ``best``: ``at(0)`` is ``best`` (fits), ``at(1)`` is sharper (too big when ``hi_size`` is
+        given; not tried yet when it is None).
+
+        Probe points are aimed inside the window by interpolating the sizes measured so far; every
+        candidate is a real file, so the limit is never exceeded.
         """
-        c = Strategy(**best["strategy"])
-        gentler = [r for r in keep.values()
-                   if not r["meets"] and r["strategy"]["kind"] == c.kind
-                   and (r["strategy"]["dpi"] or 0) >= c.dpi and (r["strategy"]["quality"] or 0) >= c.quality
-                   and (r["strategy"]["dpi"], r["strategy"]["quality"]) != (c.dpi, c.quality)]
-        if gentler:  # nearest gentler step of the same kind, known to be too big
-            g = min(gentler, key=lambda r: (r["strategy"]["dpi"], r["strategy"]["quality"]))
-            hi = Strategy(**g["strategy"])
-            hi_size: Optional[int] = g["size"]
-        else:        # none tried: explore upwards (size is measured before trusting it)
-            hi = Strategy(c.level, c.kind, min(int(c.dpi * 1.5), 200), min(c.quality + 25, 90), c.grayscale)
-            hi_size = None
-        if hi.dpi <= c.dpi and hi.quality <= c.quality:
-            return best
-
-        def at(x: float) -> Strategy:
-            return Strategy(c.level, c.kind, round(c.dpi + x * (hi.dpi - c.dpi)),
-                            round(c.quality + x * (hi.quality - c.quality)), c.grayscale)
-
-        log("info", f"Fine-tuning: {_fmt(best['size'])} uses only {100 * best['size'] // target_bytes}% of the "
-                    f"{_fmt(target_bytes)} limit - trying sharper settings...")
-        lo_x, lo_size = 0.0, best["size"]
-        hi_x = 1.0
-        aim = 0.97 * target_bytes
-        n = min(4, max(1, batch_size)) if pool is not None else 1
-        for rnd in range(3):
+        nonlocal rounds_left
+        lo_x, lo_size, hi_x = 0.0, best["size"], 1.0
+        while rounds_left > 0 and best["size"] < floor:
             if is_cancelled():
                 raise CancelledError()
             if hi_size is not None and hi_size > lo_size:
-                # Interpolate where the size should reach ~97% of the limit, then probe around it.
-                guess = lo_x + (aim - lo_size) / (hi_size - lo_size) * (hi_x - lo_x)
-                spread = [1.0] if n == 1 else [0.85, 1.0, 1.15, 1.3][:n]
-                points = [lo_x + (guess - lo_x) * f for f in spread]
+                # Aim at several sizes inside the window, nearest to the limit first.
+                aims = [target_bytes - band * f for f in ((0.4,) if n_parallel == 1 else (0.1, 0.35, 0.6, 0.85))]
+                points = [lo_x + (aim - lo_size) / (hi_size - lo_size) * (hi_x - lo_x) for aim in aims]
             else:
-                points = [lo_x + (hi_x - lo_x) * (i + 1) / (n + 1) for i in range(n)]
-            points = [x for x in points if lo_x < x < hi_x]
-            cands, seen = [], {(c.dpi, c.quality), (at(lo_x).dpi, at(lo_x).quality)}
-            for x in sorted(points, reverse=True):  # sharpest first: the first one that fits is the best
-                st = at(x)
-                if (st.dpi, st.quality) in seen or (st.dpi, st.quality) == (hi.dpi, hi.quality):
-                    continue
-                seen.add((st.dpi, st.quality))
-                cands.append((x, st))
-            if not cands:
-                break
-            flag = workdir / f"{name}.refine{rnd}"
+                points = [lo_x + (hi_x - lo_x) * (i + 1) / (n_parallel + 1) for i in range(n_parallel)]
+            grid = {at(lo_x), at(hi_x)}
+            cands = []
+            for x in sorted((x for x in points if lo_x < x < hi_x), reverse=True):  # sharpest first
+                if at(x) not in grid:
+                    grid.add(at(x))
+                    cands.append((x, at(x)))
+            if not cands:   # all aims fell on known settings: try the step in between
+                mid = (lo_x + hi_x) / 2
+                if at(mid) in grid:
+                    break   # no setting left between the two
+                cands = [(mid, at(mid))]
+            rounds_left -= 1
+            flag = workdir / f"{name}.refine{rounds_left}"
             flag.unlink(missing_ok=True)
             for (x, st), res in zip(cands, run_batch([s for _, s in cands], flag)):
                 if res is None:
                     continue
                 rec = record(st, res)
                 if rec and rec["meets"]:
-                    if x > lo_x:
-                        best, lo_x, lo_size = rec, x, rec["size"]
+                    if rec["size"] > best["size"]:
+                        best.clear()
+                        best.update(rec)
+                    if x > lo_x:  # fits: move the lower bound up even if the size did not change
+                        lo_x, lo_size = x, max(lo_size, rec["size"])
                     break
                 if rec and x < hi_x:  # too big: the new upper bound, with its measured size
                     hi_x, hi_size = x, rec["size"]
-            if best["size"] >= REFINE_GOOD * target_bytes:
-                break
+
+    def sharper_too_big(c: Strategy) -> List[dict]:
+        """Measured attempts of the same kind that are sharper than ``c`` but exceed the limit."""
+        return [r for r in keep.values()
+                if not r["meets"] and r["strategy"]["kind"] == c.kind and not r["strategy"]["alt_share"]
+                and r["strategy"]["grayscale"] == c.grayscale
+                and (r["strategy"]["dpi"] or 0) >= c.dpi and (r["strategy"]["quality"] or 0) >= c.quality
+                and (r["strategy"]["dpi"], r["strategy"]["quality"]) != (c.dpi, c.quality)]
+
+    def fine_tune(chosen_rec: dict) -> dict:
+        """Use the size limit fully: end up within ``band`` (0.2 MB) below it, as sharp as possible."""
+        best = dict(chosen_rec)
+        log("info", f"Fine-tuning: {_fmt(best['size'])} is more than {_fmt(band)} below the "
+                    f"{_fmt(target_bytes)} limit - trying sharper settings...")
+
+        def line(lo: Strategy, hi: Strategy) -> Callable[[float], Strategy]:
+            return lambda x: Strategy(lo.level, lo.kind, round(lo.dpi + x * (hi.dpi - lo.dpi)),
+                                      round(lo.quality + x * (hi.quality - lo.quality)), lo.grayscale)
+
+        # 1. Move DPI and JPEG quality together towards the nearest sharper step that was too big
+        #    (or explore upwards when none was tried).
+        c = Strategy(**best["strategy"])
+        gentler = sharper_too_big(c)
+        if gentler:
+            g = min(gentler, key=lambda r: (r["strategy"]["dpi"], r["strategy"]["quality"]))
+            search(best, line(c, Strategy(**g["strategy"])), g["size"])
+        else:
+            hi = Strategy(c.level, c.kind, min(max(int(c.dpi * 1.5), c.dpi), dpi_max),
+                          min(c.quality + 25, q_max), c.grayscale)
+            if (hi.dpi, hi.quality) != (c.dpi, c.quality):
+                search(best, line(c, hi), None)
+        # 2. Still below the window (one DPI step changes the size too much): keep the DPI and raise
+        #    only the JPEG quality.
+        b = Strategy(**best["strategy"])
+        if best["size"] < floor and b.quality < q_max:
+            same_dpi = [r for r in sharper_too_big(b) if r["strategy"]["dpi"] == b.dpi]
+            if same_dpi:
+                g = min(same_dpi, key=lambda r: r["strategy"]["quality"])
+                search(best, line(b, Strategy(**g["strategy"])), g["size"])
+            else:
+                search(best, line(b, Strategy(b.level, b.kind, b.dpi, q_max, b.grayscale)), None)
+        # 3. Still below (even one quality step is too much for a large volume): give a share of the
+        #    images / pages the next sharper setting - this changes the size in small steps.
+        b = Strategy(**best["strategy"])
+        tb = sharper_too_big(b)
+        if best["size"] < floor and tb:
+            g = min(tb, key=lambda r: r["size"])
+            h = Strategy(**g["strategy"])
+
+            def mix(x: float) -> Strategy:
+                share = min(999, round(1000 * x))
+                return Strategy(b.level, b.kind, b.dpi, b.quality, b.grayscale,
+                                **({"alt_dpi": h.dpi, "alt_quality": h.quality, "alt_share": share} if share else {}))
+
+            search(best, mix, g["size"])
         return best
 
+    def try_tunable_instead(current: dict) -> dict:
+        """The chosen step (e.g. Ghostscript) cannot be fine-tuned: try the next image step instead,
+        which can, and keep it only if it ends up larger (= sharper) while still fitting."""
+        level = current["level"]
+        nxt = [st for st in ladder if st.kind in ("images", "raster") and st.level >= level
+               and not (st.kind == "images" and images_useless)
+               and not any(r["strategy"] == asdict(st) for r in keep.values())]
+        if not nxt:
+            return current
+        res = run_batch([nxt[0]], workdir / f"{name}.alt")[0]
+        rec = record(nxt[0], res) if res else None
+        if not rec or not rec["meets"]:
+            return current
+        tuned = fine_tune(rec) if rec["size"] < floor else rec
+        return tuned if tuned["size"] > current["size"] else current
+
     if (chosen is not None and target_bytes and not want_lossless_always
-            and chosen["strategy"]["kind"] in ("images", "raster")
-            and chosen["size"] < REFINE_BELOW * target_bytes):
+            and chosen["strategy"]["kind"] not in ("plain", "optimize")   # lossless: nothing to sharpen
+            and chosen["size"] < floor):
         before = chosen["size"]
-        chosen = fine_tune(chosen)
+        if chosen["strategy"]["kind"] in ("images", "raster"):
+            chosen = fine_tune(chosen)
+        else:
+            chosen = try_tunable_instead(chosen)
         if chosen["size"] > before:
-            log("ok", f"Fine-tuned: {_fmt(chosen['size'])} ({100 * chosen['size'] // target_bytes}% of the limit) "
-                      f"with {chosen['label']}")
+            log("ok", f"Fine-tuned: {_fmt(chosen['size'])} ({_fmt(target_bytes - chosen['size'])} below the "
+                      f"limit) with {chosen['label']}")
+        if chosen["size"] < floor:
+            log("info", f"{_fmt(chosen['size'])} is the closest size to the limit these settings can reach.")
 
     if smallest is None and lossless is None:
         # Every attempt failed (e.g. out of memory): there is nothing safe to deliver.

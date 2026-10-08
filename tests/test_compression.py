@@ -165,3 +165,25 @@ def test_fine_tuning_uses_more_of_the_limit(make, tmp_path):
         assert any("Fine-tuning" in m for _, m in logs)
         assert res["chosen"]["size"] >= coarse
     assert res["chosen"]["size"] >= 0.80 * target, (res["chosen"]["size"], target)
+
+
+def test_fine_tuning_lands_inside_the_size_window(make, tmp_path):
+    """A compressed volume must end up within size_band() below the limit (0.2 MB; 10% under 2 MB)."""
+    from backend.app.services.compression_engine import size_band
+    path = make("window.pdf", [("Annexure W", 10, 1)], image_px=900)
+    for share in (0.30, 0.55):
+        target = int(path.stat().st_size * share)
+        res, _ = _run(path, tmp_path, target)
+        size = res["chosen"]["size"]
+        assert res["achieved"] and size <= target
+        assert size >= target - size_band(target), (size, target, [(a["label"], a["size"]) for a in res["attempts"]])
+
+
+def test_size_band_and_mixed_settings():
+    from backend.app.services.compression_engine import Strategy, size_band
+    assert size_band(5_000_000) == 200_000 and size_band(20_000_000) == 200_000
+    assert size_band(1_000_000) == 100_000
+    st = Strategy(2, "images", 150, 76, alt_dpi=150, alt_quality=77, alt_share=250)
+    assert [st.settings_for(i, 8) for i in range(8)] == [(150, 77), (150, 77)] + [(150, 76)] * 6
+    assert Strategy(2, "images", 150, 76).settings_for(0, 8) == (150, 76)
+    assert "25% at 150 DPI, JPEG 77" in st.label and st.key != Strategy(2, "images", 150, 76).key
