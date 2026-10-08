@@ -152,3 +152,16 @@ def test_recompressed_jpx_flag_removed(tmp_path):
     assert replaced == 1
     assert doc.xref_get_key(xref, "SMaskInData")[0] == "null"
     assert doc.xref_get_key(xref, "Filter")[1] == "/DCTDecode"
+
+
+def test_fine_tuning_uses_more_of_the_limit(make, tmp_path):
+    """The result must fit the limit but use as much of it as possible (sharper output)."""
+    path = make("tune.pdf", [("Annexure T", 8, 1)], image_px=700)
+    target = int(path.stat().st_size * 0.30)
+    res, logs = _run(path, tmp_path, target)
+    assert res["achieved"] and res["chosen"]["size"] <= target
+    coarse = [a for a in res["attempts"] if a["ok"]][0]["size"]  # first ladder step that fitted
+    if coarse < 0.92 * target:
+        assert any("Fine-tuning" in m for _, m in logs)
+        assert res["chosen"]["size"] >= coarse
+    assert res["chosen"]["size"] >= 0.80 * target, (res["chosen"]["size"], target)

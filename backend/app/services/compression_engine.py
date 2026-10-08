@@ -449,6 +449,8 @@ _WORKER_DOCS: dict = {}
 SAMPLE_PAGES = 6          # pages used to predict the size of each level
 MIN_PAGES_TO_PREDICT = 16  # smaller volumes are simply tried in full
 PREDICT_MARGIN = 1.35     # also try levels predicted up to 35% above the target (predictions are estimates)
+REFINE_BELOW = 0.92       # fine-tune when the chosen file uses less than 92% of the size limit
+REFINE_GOOD = 0.95        # ... and stop fine-tuning once a file uses at least 95% of it
 
 
 def _worker_source(source_path: str) -> fitz.Document:
@@ -593,14 +595,15 @@ def compress_volume(
     decided_flag = workdir / f"{name}.decided"
     decided_flag.unlink(missing_ok=True)
 
-    def run_batch(batch: List[Strategy]) -> List[dict]:
+    def run_batch(batch: List[Strategy], stop_flag: Optional[Path] = None) -> List[dict]:
+        stop_flag = stop_flag or decided_flag
         lp = lossless["path"] if lossless else None
         paths = [workdir / f"{name}__L{st.level}_{st.key}.pdf" for st in batch]
         if pool is None:
             return [dict(_run_and_measure(st, src, start, end, toc, path, Path(lp) if lp else None,
                                           gs_path, gs_timeout, is_cancelled), path=path)
                     for st, path in zip(batch, paths)]
-        flags = [str(cancel_flag) if cancel_flag else "", str(decided_flag)]
+        flags = [str(cancel_flag) if cancel_flag else "", str(stop_flag)]
         futures = [pool.submit(worker_attempt, source_path, start, end, toc, asdict(st), str(path), lp,
                                gs_path, gs_timeout, flags)
                    for st, path in zip(batch, paths)]
@@ -621,7 +624,7 @@ def compress_volume(
             if decided_at is not None:
                 break
         if decided_at is not None:
-            decided_flag.touch()  # running stronger attempts of this volume stop early
+            stop_flag.touch()     # running stronger attempts of this volume stop early
             for f in futures:
                 f.cancel()        # attempts not started yet are dropped
             results = results[:decided_at + 1]
@@ -692,6 +695,84 @@ def compress_volume(
             # Results are in ladder order, so the first success in a batch is the gentlest one.
             if chosen is None and rec and rec["meets"] and not (want_lossless_always and st.kind == "plain"):
                 chosen = rec
+
+    def fine_tune(best: dict) -> dict:
+        """Use more of the size limit: try settings between the chosen step and a gentler one,
+        aiming at ~97% of the limit, and keep the sharpest result that still fits.
+
+        Setting x in [0, 1] moves DPI and JPEG quality from the chosen step (x = 0, fits) towards a
+        gentler step (x = 1). Probe points are aimed by interpolating the sizes already measured;
+        every candidate is a real file, so the limit is never exceeded.
+        """
+        c = Strategy(**best["strategy"])
+        gentler = [r for r in keep.values()
+                   if not r["meets"] and r["strategy"]["kind"] == c.kind
+                   and (r["strategy"]["dpi"] or 0) >= c.dpi and (r["strategy"]["quality"] or 0) >= c.quality
+                   and (r["strategy"]["dpi"], r["strategy"]["quality"]) != (c.dpi, c.quality)]
+        if gentler:  # nearest gentler step of the same kind, known to be too big
+            g = min(gentler, key=lambda r: (r["strategy"]["dpi"], r["strategy"]["quality"]))
+            hi = Strategy(**g["strategy"])
+            hi_size: Optional[int] = g["size"]
+        else:        # none tried: explore upwards (size is measured before trusting it)
+            hi = Strategy(c.level, c.kind, min(int(c.dpi * 1.5), 200), min(c.quality + 25, 90), c.grayscale)
+            hi_size = None
+        if hi.dpi <= c.dpi and hi.quality <= c.quality:
+            return best
+
+        def at(x: float) -> Strategy:
+            return Strategy(c.level, c.kind, round(c.dpi + x * (hi.dpi - c.dpi)),
+                            round(c.quality + x * (hi.quality - c.quality)), c.grayscale)
+
+        log("info", f"Fine-tuning: {_fmt(best['size'])} uses only {100 * best['size'] // target_bytes}% of the "
+                    f"{_fmt(target_bytes)} limit - trying sharper settings...")
+        lo_x, lo_size = 0.0, best["size"]
+        hi_x = 1.0
+        aim = 0.97 * target_bytes
+        n = min(4, max(1, batch_size)) if pool is not None else 1
+        for rnd in range(3):
+            if is_cancelled():
+                raise CancelledError()
+            if hi_size is not None and hi_size > lo_size:
+                # Interpolate where the size should reach ~97% of the limit, then probe around it.
+                guess = lo_x + (aim - lo_size) / (hi_size - lo_size) * (hi_x - lo_x)
+                spread = [1.0] if n == 1 else [0.85, 1.0, 1.15, 1.3][:n]
+                points = [lo_x + (guess - lo_x) * f for f in spread]
+            else:
+                points = [lo_x + (hi_x - lo_x) * (i + 1) / (n + 1) for i in range(n)]
+            points = [x for x in points if lo_x < x < hi_x]
+            cands, seen = [], {(c.dpi, c.quality), (at(lo_x).dpi, at(lo_x).quality)}
+            for x in sorted(points, reverse=True):  # sharpest first: the first one that fits is the best
+                st = at(x)
+                if (st.dpi, st.quality) in seen or (st.dpi, st.quality) == (hi.dpi, hi.quality):
+                    continue
+                seen.add((st.dpi, st.quality))
+                cands.append((x, st))
+            if not cands:
+                break
+            flag = workdir / f"{name}.refine{rnd}"
+            flag.unlink(missing_ok=True)
+            for (x, st), res in zip(cands, run_batch([s for _, s in cands], flag)):
+                if res is None:
+                    continue
+                rec = record(st, res)
+                if rec and rec["meets"]:
+                    if x > lo_x:
+                        best, lo_x, lo_size = rec, x, rec["size"]
+                    break
+                if rec and x < hi_x:  # too big: the new upper bound, with its measured size
+                    hi_x, hi_size = x, rec["size"]
+            if best["size"] >= REFINE_GOOD * target_bytes:
+                break
+        return best
+
+    if (chosen is not None and target_bytes and not want_lossless_always
+            and chosen["strategy"]["kind"] in ("images", "raster")
+            and chosen["size"] < REFINE_BELOW * target_bytes):
+        before = chosen["size"]
+        chosen = fine_tune(chosen)
+        if chosen["size"] > before:
+            log("ok", f"Fine-tuned: {_fmt(chosen['size'])} ({100 * chosen['size'] // target_bytes}% of the limit) "
+                      f"with {chosen['label']}")
 
     if smallest is None and lossless is None:
         # Every attempt failed (e.g. out of memory): there is nothing safe to deliver.

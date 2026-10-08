@@ -252,6 +252,11 @@ memory is low):
 * **Early stop:** as soon as the gentlest level that meets the limit is known, the volume's other
   attempts are cancelled.
 * Page fingerprints are read in the background, and all volumes are validated in parallel.
+* **Fine-tuning to the limit:** compression steps are coarse, so the first step that fits can land
+  well below the limit (e.g. 3.1 MB for a 5 MB limit). If a compressed volume uses less than 92% of the
+  limit, the app tries settings between that step and the gentler one that was too big (higher DPI and
+  JPEG quality), aiming at about 97% of the limit. It keeps the sharpest result that still fits, so
+  volumes typically end up at 95–99% of the limit. Every candidate is a real file, so the limit is never exceeded.
 
 The result is the same file a one-by-one search would choose: the real size of every candidate is
 measured, and the gentlest real success wins. On a 16-core PC, a 100 MB report into 3 × 4 MB volumes
