@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command setup for an Ubuntu server (tested target: Oracle Cloud Always Free, Ubuntu 22.04/24.04).
+# One-command setup for an Ubuntu server (intended for Oracle Cloud Always Free, Ubuntu 22.04/24.04).
 #   curl -fsSL https://raw.githubusercontent.com/maddulajayanth517-ux/audit-pdf-manager/main/deploy/setup-server.sh | bash
 # Safe to run again: it updates the code and restarts the app.
 set -euo pipefail
