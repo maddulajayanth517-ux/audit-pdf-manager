@@ -100,6 +100,27 @@ paid instance (2 GB+ RAM) and raise `MAX_UPLOAD_MB`.
 Railway's free allowance is a small monthly credit, so heavy compression of large PDFs can use it up.
 Watch **Usage** in the dashboard.
 
+### Oracle Cloud Always Free (free, large PDFs)
+
+Oracle's Always Free tier includes an ARM server with **4 CPUs, 24 GB RAM and 200 GB disk**, enough
+for 100 MB+ reports and many jobs. Sign-up needs a card for identity verification only.
+
+1. Sign up at <https://signup.cloud.oracle.com> (choose **Hyderabad** or **Mumbai** as home region).
+2. **Compute → Instances → Create instance**:
+   - Image: **Ubuntu 22.04 or 24.04**. Shape: **Ampere VM.Standard.A1.Flex**, **4 OCPU / 24 GB**
+     (it shows *Always Free-eligible*).
+   - Add your SSH key, or let Oracle generate one and download it. Click **Create**.
+   - If you get "Out of capacity", try another availability domain or try again later.
+3. Allow web traffic: go to the instance's **Subnet → Security List → Add Ingress Rules**, with source
+   `0.0.0.0/0` and TCP destination ports **80** and **443**.
+4. Connect with SSH (`ssh ubuntu@<public-ip>`) and run:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/maddulajayanth517-ux/audit-pdf-manager/main/deploy/setup-server.sh | bash
+   ```
+   It installs Docker, opens the firewall, asks for the login password, and starts the app behind
+   HTTPS at `https://<ip-with-dashes>.sslip.io`, a free address that needs no domain purchase.
+5. To update after new commits, run the same command again.
+
 ### Your own server (Docker)
 
 ```bash

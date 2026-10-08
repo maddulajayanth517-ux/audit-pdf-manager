@@ -1,0 +1,11 @@
+# HTTPS reverse proxy. Caddy obtains a free Let's Encrypt certificate for $DOMAIN automatically.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:8000 {
+		# Large PDF uploads / long compression runs
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+}
