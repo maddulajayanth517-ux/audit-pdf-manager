@@ -1,0 +1,32 @@
+AUDIT PDF VOLUME & ANNEXURE MANAGER - HOW TO START (Windows)
+=============================================================
+
+ONE-TIME SETUP
+1. Install Python 3.10 or newer: https://www.python.org/downloads/
+   On the FIRST installer screen tick  "Add python.exe to PATH",  then click "Install Now".
+2. Unzip this folder somewhere permanent, e.g.  D:\audit-pdf-manager
+
+EVERY TIME
+3. Double-click  run.bat
+   - First start only: it downloads the required libraries (about 50 MB, needs internet,
+     a few minutes). After that the app works completely offline.
+   - The browser opens automatically at  http://127.0.0.1:8000
+4. Keep the black window open while you use the app. Close it to stop the app.
+
+USING THE APP
+- Upload a bookmarked audit-report PDF.
+- Check the detected sections (each bookmarked Annexure is kept together, never split).
+- Choose: Maximum size per volume, Number of volumes, or Both.  Click PLAN VOLUMES.
+- Optionally move an Annexure between neighbouring volumes with the arrow buttons.
+- Click GENERATE VOLUMES, then download each volume or all volumes as one ZIP.
+- Click "Finish & delete files" when done (files are also deleted automatically).
+
+PRIVACY
+Everything runs on this computer. PDFs are never uploaded to the internet and are deleted
+automatically after processing.
+
+TROUBLESHOOTING
+- "Python is not installed": install Python (step 1) and tick "Add python.exe to PATH".
+- The browser shows "can't connect": wait a few seconds and refresh; keep the black window open.
+- Started run.bat twice: it simply opens the browser again.
+- More details: README.md

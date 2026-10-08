@@ -32,6 +32,7 @@ from .compression_engine import (
     compress_volume,
     stronger_ladder,
     worker_fingerprints,
+    worker_init,
     worker_validate,
 )
 from .pdf_reader import PdfProcessingError
@@ -192,7 +193,7 @@ def summarize(spec: dict, volumes: List[dict], coverage: List[dict]) -> dict:
 def available_cpus() -> int:
     """CPUs this process may really use.
 
-    Inside a container (Docker, Hugging Face Spaces, ...) os.cpu_count() reports the HOST's cores,
+    Inside a container (Docker, Render, Railway, ...) os.cpu_count() reports the HOST's cores,
     e.g. 32, while the container is limited to 2. The cgroup limit and CPU affinity are checked first.
     """
     try:  # cgroup v2: "max 100000" (no limit) or "200000 100000" (= 2 CPUs)
@@ -330,7 +331,8 @@ def run_generation(job_dir: Path, status: StatusWriter, is_cancelled: Callable[[
             validations = {vol["index"]: None for vol in results}  # validated below, in this process
         else:
             status.event("info", f"Generating {len(results)} volume(s) in parallel ({workers} worker process(es))...")
-            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool, \
+            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
+                                     initializer=worker_init, initargs=(os.getpid(),)) as pool, \
                     ThreadPoolExecutor(max_workers=max(1, len(results))) as coordinators:
                 # Page fingerprints (for validation) are read in the background while volumes compress.
                 n = spec["page_count"]

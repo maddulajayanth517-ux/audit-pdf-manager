@@ -453,6 +453,35 @@ REFINE_BELOW = 0.92       # fine-tune when the chosen file uses less than 92% of
 REFINE_GOOD = 0.95        # ... and stop fine-tuning once a file uses at least 95% of it
 
 
+def worker_init(parent_pid: int) -> None:
+    """Pool-worker initializer: exit by itself if the job process that started it disappears.
+
+    Normally the job shuts its pool down cleanly; this is the safety net for a job that was killed
+    (server stopped mid-job, cancelled after the grace period, ended in Task Manager, ...).
+    """
+    import threading
+    import time
+
+    try:
+        import psutil
+
+        parent = psutil.Process(parent_pid)
+    except Exception:  # noqa: BLE001 - psutil missing or parent already gone
+        return
+
+    def watch() -> None:
+        while True:
+            time.sleep(2)
+            try:
+                alive = parent.is_running() and parent.status() != psutil.STATUS_ZOMBIE
+            except psutil.Error:
+                alive = False
+            if not alive:
+                os._exit(0)
+
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
 def _worker_source(source_path: str) -> fitz.Document:
     """The source PDF, opened once per worker process."""
     src = _WORKER_DOCS.get(source_path)

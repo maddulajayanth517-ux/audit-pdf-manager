@@ -53,7 +53,7 @@ class JobManager:
         with self.lock:
             for task in self.running.values():
                 if task.process and task.process.is_alive():
-                    task.process.terminate()
+                    _terminate_tree(task.process)
             self.running.clear()
             self.queue.clear()
 
@@ -107,7 +107,7 @@ class JobManager:
                     continue
                 if proc.is_alive():
                     if task.cancel_requested_at and time.time() - task.cancel_requested_at > CANCEL_GRACE_S:
-                        proc.terminate()
+                        _terminate_tree(proc)
                         _mark(task.job_dir, "cancelled", "Processing cancelled by the user.", task.action)
                     continue
                 proc.join(timeout=0.1)
@@ -130,6 +130,22 @@ class JobManager:
             except Exception:  # noqa: BLE001
                 log.exception("Job monitor error")
             self._stop.wait(0.5)
+
+
+def _terminate_tree(proc) -> None:
+    """Stop a job process AND the compression workers it started (otherwise they could linger)."""
+    try:
+        import psutil
+
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:  # noqa: BLE001 - psutil missing or process already gone
+        children = []
+    for child in children:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    proc.terminate()
 
 
 def _mark(job_dir: Path, state: str, message: str, action: str = "generate") -> None:
