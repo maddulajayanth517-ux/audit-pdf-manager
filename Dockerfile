@@ -21,7 +21,9 @@ COPY frontend ./frontend
 RUN useradd --create-home --uid 1000 appuser && mkdir -p /tmp/audit_pdf_manager && chown appuser /tmp/audit_pdf_manager
 USER appuser
 
+# Hosting platforms (Render, Railway, ...) pass the port in $PORT; 8000 otherwise.
+ENV PORT=8000
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
-# --proxy-headers: correct client/HTTPS information behind a hosting proxy (Hugging Face, nginx, ...)
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('PORT', '8000'))"
+# --proxy-headers: correct client/HTTPS information behind the platform's proxy
+CMD ["sh", "-c", "exec uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'"]

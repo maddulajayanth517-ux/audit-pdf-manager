@@ -1,0 +1,26 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Dashboard -> New -> Blueprint -> select this GitHub repo. Render asks for APP_PASSWORD.
+services:
+  - type: web
+    name: audit-pdf-manager
+    runtime: docker
+    plan: free              # 512 MB RAM, shared CPU, sleeps after 15 min without use
+    region: singapore       # closest Render region to India
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true        # every push to GitHub redeploys
+    envVars:
+      - key: APP_PASSWORD   # login password - entered by you when the Blueprint is created
+        sync: false
+      - key: APP_USERNAME
+        value: audit
+      # Free instance: 512 MB RAM. One job at a time, processed in a single process.
+      - key: WORKERS_PER_JOB
+        value: "1"
+      - key: MAX_CONCURRENT_JOBS
+        value: "1"
+      # Larger PDFs can exhaust 512 MB of memory; raise this on a paid instance.
+      - key: MAX_UPLOAD_MB
+        value: "60"
+      - key: FILE_TTL_MINUTES
+        value: "30"

@@ -320,3 +320,15 @@ def test_password_protection(client, monkeypatch):
     good = base64.b64encode(b"audit:s3cret").decode()
     assert client.get("/", headers={"Authorization": f"Basic {good}"}).status_code == 200
     assert client.get("/api/compression/info", headers={"Authorization": f"Basic {good}"}).status_code == 200
+
+
+def test_low_memory_mode_single_process(ten_section_pdf, tmp_path, monkeypatch):
+    """With one worker (e.g. a 512 MB cloud instance) everything runs in one process, same results."""
+    from backend.app.services import generation_service
+    monkeypatch.setattr(generation_service, "worker_count", lambda spec: 1)
+    size = ten_section_pdf.stat().st_size
+    spec, status = _job(ten_section_pdf, tmp_path / "job", max_bytes=int(size / 3))
+    assert status["state"] == "completed", status
+    assert any("low-memory mode" in e["msg"] for e in status["events"])
+    assert status["summary"]["validation_passed"]
+    assert all(v["status"] == "PASS" and v["size_bytes"] <= int(size / 3) for v in status["volumes"])

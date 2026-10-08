@@ -1,14 +1,3 @@
----
-title: Audit PDF Volume Manager
-emoji: 📑
-colorFrom: blue
-colorTo: gray
-sdk: docker
-app_port: 8000
-pinned: false
-short_description: Split audit PDFs into size-limited volumes without splitting Annexures
----
-
 # Audit PDF Volume & Annexure Manager
 
 A local web application that turns one large audit-report PDF into client-compliant **volumes**
@@ -79,35 +68,47 @@ nothing is written to the host disk. Raise the `tmpfs` size in `docker-compose.y
 
 ---
 
-## Deploying online for free (Hugging Face Spaces)
+## Deploying online
 
-A free Hugging Face Space (Docker, CPU basic: 2 vCPU, 16 GB RAM) runs this project unchanged. The
-`---` block at the top of this README tells Hugging Face that it is a Docker app on port 8000.
+The app is a normal Docker web service. It reads the port from `$PORT`, and the repository contains
+ready-made configuration for **Render** (`render.yaml`) and **Railway** (`railway.json`). Both
+deploy straight from this GitHub repository and redeploy on every push.
 
-1. Create a free account at <https://huggingface.co/join>.
-2. **New Space** (<https://huggingface.co/new-space>): name `audit-pdf-manager`, SDK **Docker → Blank**,
-   hardware **CPU basic (free)**. *Public* is fine: the code holds no secrets, and the app itself is
-   password-protected.
-3. In the Space, open **Settings → Variables and secrets → New secret**, and add `APP_PASSWORD` with a
-   strong password (optionally also `APP_USERNAME`; the default is `audit`). Do this **before**
-   uploading, so the app never runs without a login.
-4. Create a token with **write** access at <https://huggingface.co/settings/tokens>, then upload
-   from this folder:
-   ```powershell
-   hf auth login
-   hf upload spaces/<your-username>/audit-pdf-manager . . --repo-type space `
-     --exclude ".venv/*" --exclude "**/__pycache__/*" --exclude ".pytest_cache/*" `
-     --exclude ".env" --exclude "*.pdf" --exclude "*.zip"
-   ```
-5. The Space builds the image (a few minutes; progress is in the **Logs** tab). Then open the
-   **direct link** `https://<your-username>-audit-pdf-manager.hf.space`, not the huggingface.co page:
-   the login prompt does not work inside Hugging Face's embedded view. Share that link and the password.
+**Always set `APP_PASSWORD`** when the app is reachable from the internet. Users then log in with
+username `audit` (or `APP_USERNAME`) and that password.
 
-To update the deployment later, run the same `hf upload` command again.
+### Render (free plan, no card)
 
-Free-tier notes: the Space sleeps after 48 hours without use, and the first visit after that takes
-1–2 minutes to wake it. Storage is temporary (uploads are deleted anyway). 2 vCPU is slower than a
-16-core desktop, roughly 2–4× for heavy compression.
+1. Sign in at <https://dashboard.render.com> with GitHub.
+2. **New → Blueprint**, select this repository, and enter a strong `APP_PASSWORD` when asked.
+3. Wait for the build (about 5–10 minutes the first time). Open the `https://audit-pdf-manager-….onrender.com`
+   link and share it, with the password.
+
+Free-plan limits: 512 MB RAM and a shared CPU, so the app runs in **low-memory mode** (one job at a
+time, one process) and uploads are capped at 60 MB (`MAX_UPLOAD_MB`). The service sleeps after 15
+minutes without use, and the first visit after that takes about a minute. For 100 MB reports, use a
+paid instance (2 GB+ RAM) and raise `MAX_UPLOAD_MB`.
+
+### Railway (trial credit, then usage-based)
+
+1. Sign in at <https://railway.com> with GitHub.
+2. **New Project → Deploy from GitHub repo**, and select this repository. `railway.json` makes it
+   build the Dockerfile.
+3. In the service, open **Variables** and add `APP_PASSWORD`. Then go to **Settings → Networking →
+   Generate Domain** to get the public link.
+
+Railway's free allowance is a small monthly credit, so heavy compression of large PDFs can use it up.
+Watch **Usage** in the dashboard.
+
+### Your own server (Docker)
+
+```bash
+docker build -t audit-pdf-manager .
+docker run -d -p 8000:8000 -e APP_PASSWORD='choose-a-strong-one' --restart unless-stopped audit-pdf-manager
+```
+
+Or use `docker compose up -d --build` with an `.env` file. Put HTTPS in front with a reverse
+proxy (for example Caddy).
 
 ## Ghostscript (optional)
 

@@ -115,11 +115,8 @@ def _bake_form_fields(src: fitz.Document, job_dir: Path, spec: dict, status: "St
 
 
 def _warn_low_memory(status: "StatusWriter") -> None:
-    try:
-        import psutil
-
-        available = psutil.virtual_memory().available
-    except Exception:  # noqa: BLE001 - psutil is optional
+    available = available_memory()
+    if available is None:
         return
     if available < 400_000_000:
         status.event("warn", f"Low available memory ({format_size(available)}). Processing may be slow or fail.")
@@ -222,16 +219,36 @@ def worker_count(spec: dict) -> int:
     cpus = available_cpus()
     # Leave one core for the web server when there are enough; small containers use all they have.
     workers = configured or max(1, min(8, cpus - 1 if cpus > 2 else cpus))
-    try:
-        import psutil
-
-        available = psutil.virtual_memory().available
+    available = available_memory()
+    if available is not None:
         # Roughly one worker per 600 MB of free memory, plus room for large source files.
         per_worker = 600_000_000 + spec.get("source_size", 0)
         workers = min(workers, max(1, int(available // per_worker)))
+    return max(1, workers)
+
+
+def available_memory() -> Optional[int]:
+    """Free memory for this process, respecting a container memory limit (cgroup) if there is one."""
+    free = None
+    try:
+        import psutil
+
+        free = psutil.virtual_memory().available
     except Exception:  # noqa: BLE001 - psutil is optional
         pass
-    return max(1, workers)
+    for limit_file, usage_file in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+                                   ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                                    "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        try:
+            raw = Path(limit_file).read_text().strip()
+            if raw == "max" or int(raw) > 1 << 50:  # no real limit
+                break
+            container_free = int(raw) - int(Path(usage_file).read_text().strip())
+            free = container_free if free is None else min(free, container_free)
+            break
+        except (OSError, ValueError):
+            continue
+    return free
 
 
 def run_generation(job_dir: Path, status: StatusWriter, is_cancelled: Callable[[], bool]) -> None:
@@ -272,8 +289,8 @@ def run_generation(job_dir: Path, status: StatusWriter, is_cancelled: Callable[[
         _warn_low_memory(status)
 
         workers = worker_count(spec)
-        status.event("info", f"Generating {len(results)} volume(s) in parallel ({workers} worker process(es))...")
         compressed: dict = {}
+        validations: dict = {}
         done_pages = [0]
         cancel_flag = job_dir / "cancel.flag"
 
@@ -294,39 +311,58 @@ def run_generation(job_dir: Path, status: StatusWriter, is_cancelled: Callable[[
             return res
 
         source = spec["source_path"]
-        with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool, \
-                ThreadPoolExecutor(max_workers=max(1, len(results))) as coordinators:
-            # Page fingerprints (for validation) are read in the background while volumes compress.
-            n = spec["page_count"]
-            chunk = max(25, -(-n // workers))
-            fp_futures = [pool.submit(worker_fingerprints, source, a, min(a + chunk - 1, n))
-                          for a in range(1, n + 1, chunk)]
-            futures = {vol["index"]: coordinators.submit(compress_one, vol) for vol in results}
-            try:
-                for idx, fut in futures.items():
-                    compressed[idx] = fut.result()
-                fps = [fp for f in fp_futures for fp in f.result()]
-                write_json_atomic(job_dir / "fingerprints.json", fps)
+        if workers <= 1:
+            # Low-memory mode (e.g. a 512 MB cloud instance): everything runs in this process,
+            # one volume after another - no extra worker processes, so far less memory is needed.
+            status.event("info", f"Generating {len(results)} volume(s) one at a time (low-memory mode)...")
+            fps = page_fingerprints(src, with_text=True)
+            write_json_atomic(job_dir / "fingerprints.json", fps)
+            for vol in results:
+                i, s, e = vol["index"], vol["start_page"], vol["end_page"]
+                compressed[i] = compress_volume(
+                    src, s, e, toc, spec.get("max_bytes"), spec["compression"], work_dir, f"vol{i:02d}",
+                    lambda level, msg, _i=i: status.event(level, f"Volume {_i}: {msg}"),
+                    is_cancelled, spec.get("gs_path"), spec.get("gs_timeout", 600),
+                )
+                done_pages[0] += e - s + 1
+                status.progress(0.05 + 0.75 * done_pages[0] / max(total_pages, 1))
+            status.event("info", "Validating volumes...")
+            validations = {vol["index"]: None for vol in results}  # validated below, in this process
+        else:
+            status.event("info", f"Generating {len(results)} volume(s) in parallel ({workers} worker process(es))...")
+            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool, \
+                    ThreadPoolExecutor(max_workers=max(1, len(results))) as coordinators:
+                # Page fingerprints (for validation) are read in the background while volumes compress.
+                n = spec["page_count"]
+                chunk = max(25, -(-n // workers))
+                fp_futures = [pool.submit(worker_fingerprints, source, a, min(a + chunk - 1, n))
+                              for a in range(1, n + 1, chunk)]
+                futures = {vol["index"]: coordinators.submit(compress_one, vol) for vol in results}
+                try:
+                    for idx, fut in futures.items():
+                        compressed[idx] = fut.result()
+                    fps = [fp for f in fp_futures for fp in f.result()]
+                    write_json_atomic(job_dir / "fingerprints.json", fps)
 
-                # Validate all volumes in parallel (each worker opens the source once).
-                status.event("info", "Validating volumes...")
-                val_futures = {}
-                for vol in results:
-                    res = compressed[vol["index"]]
-                    out_path = job_dir / "out" / vol["filename"]
-                    shutil.copyfile(res["chosen"]["path"], out_path)
-                    kind = (res["chosen"].get("strategy") or {}).get("kind", "plain")
-                    s, e = vol["start_page"], vol["end_page"]
-                    expected_bm = len(volume_toc(spec["toc"], s, e)) if spec["preserve_bookmarks"] else 0
-                    val_futures[vol["index"]] = pool.submit(
-                        worker_validate, source, str(out_path), s, e, fps[s - 1:e], content_check_for(kind),
-                        expected_bm, spec.get("max_bytes"), [x for x in spec["sections"] if x["protected"]])
-                validations = {i: f.result() for i, f in val_futures.items()}
-            except BaseException:
-                cancel_flag.touch()  # stop the other volumes quickly
-                for fut in futures.values():
-                    fut.cancel()
-                raise
+                    # Validate all volumes in parallel (each worker opens the source once).
+                    status.event("info", "Validating volumes...")
+                    val_futures = {}
+                    for vol in results:
+                        res = compressed[vol["index"]]
+                        out_path = job_dir / "out" / vol["filename"]
+                        shutil.copyfile(res["chosen"]["path"], out_path)
+                        kind = (res["chosen"].get("strategy") or {}).get("kind", "plain")
+                        s, e = vol["start_page"], vol["end_page"]
+                        expected_bm = len(volume_toc(spec["toc"], s, e)) if spec["preserve_bookmarks"] else 0
+                        val_futures[vol["index"]] = pool.submit(
+                            worker_validate, source, str(out_path), s, e, fps[s - 1:e], content_check_for(kind),
+                            expected_bm, spec.get("max_bytes"), [x for x in spec["sections"] if x["protected"]])
+                    validations = {i: f.result() for i, f in val_futures.items()}
+                except BaseException:
+                    cancel_flag.touch()  # stop the other volumes quickly
+                    for fut in futures.values():
+                        fut.cancel()
+                    raise
 
         for n_done, vol in enumerate(results, start=1):
             if is_cancelled():
