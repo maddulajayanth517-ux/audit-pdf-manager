@@ -1,0 +1,16 @@
+services:
+  audit-pdf-manager:
+    build: .
+    image: audit-pdf-manager:latest
+    ports:
+      - "127.0.0.1:8000:8000"   # only reachable from this computer; change to "8000:8000" for the office LAN
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_TEMP_DIR: /tmp/audit_pdf_manager
+    # Temporary files live in RAM-backed tmpfs: nothing is written to the host disk.
+    # Size it to roughly 4x the largest PDF you expect to process.
+    tmpfs:
+      - /tmp/audit_pdf_manager:size=4g,uid=1000
+    restart: unless-stopped

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audit PDF Volume & Annexure Manager</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div>
+      <div class="brand">AUDIT PDF VOLUME &amp; ANNEXURE MANAGER</div>
+      <div class="tagline">Bookmark-aware volume planning · compression · validation</div>
+    </div>
+    <div class="topbar-note">Processed locally on this server · no AI services</div>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- 1. Upload -->
+  <section id="step-upload" class="card">
+    <h2><span class="num">1</span>Upload audit report PDF</h2>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose a PDF file">
+      <div class="dz-icon" aria-hidden="true">PDF</div>
+      <div class="dz-title">Drag &amp; drop the PDF here</div>
+      <div class="dz-sub">or click to choose a file</div>
+      <input id="file-input" type="file" accept="application/pdf,.pdf" hidden>
+    </div>
+    <div id="password-row" class="password-row" hidden>
+      <label for="password-input">This PDF is password-protected. Document password:</label>
+      <input id="password-input" type="password" autocomplete="off">
+      <button id="password-btn" class="btn">Unlock &amp; upload</button>
+    </div>
+    <p class="privacy"><span class="lock" aria-hidden="true"></span>
+      Uploaded audit documents are processed temporarily and are automatically removed after processing.</p>
+    <div id="upload-status" class="status-line" aria-live="polite"></div>
+    <dl id="doc-summary" class="summary-grid" hidden>
+      <div><dt>Filename</dt><dd id="sum-filename"></dd></div>
+      <div><dt>Original size</dt><dd id="sum-size"></dd></div>
+      <div><dt>Page count</dt><dd id="sum-pages"></dd></div>
+      <div><dt>Bookmark count</dt><dd id="sum-bookmarks"></dd></div>
+    </dl>
+  </section>
+
+  <!-- 2. Bookmark analysis -->
+  <section id="step-bookmarks" class="card" hidden>
+    <h2><span class="num">2</span>Bookmark analysis</h2>
+    <div id="analysis-warnings"></div>
+    <div class="level-row">
+      <label for="level-select">Bookmark level treated as indivisible volume unit</label>
+      <select id="level-select"></select>
+      <span class="hint">Every bookmark at this level (and above) starts a protected section that is never split.</span>
+    </div>
+    <div class="two-col">
+      <div class="col-tree">
+        <h3>Detected bookmarks</h3>
+        <div id="bookmark-tree" class="tree"></div>
+      </div>
+      <div class="col-sections">
+        <h3>Protected sections <span id="sections-count" class="muted"></span></h3>
+        <div class="table-wrap">
+          <table id="sections-table" class="data">
+            <thead><tr>
+              <th>Section</th><th class="r">Start</th><th class="r">End</th><th class="r">Pages</th>
+              <th class="r">Size</th><th class="c">Protected</th>
+            </tr></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
+        <p class="hint">Untick “Protected” only for a section that may be split between two volumes.</p>
+      </div>
+    </div>
+
+    <details id="manual-editor" class="advanced">
+      <summary>Advanced: define protected sections manually</summary>
+      <p class="hint">Use this when bookmarks are missing or wrong. Pages not covered by any row are added as
+        unprotected sections automatically — no page is ever dropped.</p>
+      <div class="table-wrap">
+        <table id="manual-table" class="data editable">
+          <thead><tr><th>Name</th><th class="r">Start page</th><th class="r">End page</th><th class="c">Protected</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="btn-row">
+        <button id="manual-add" class="btn">+ Add section</button>
+        <button id="manual-copy" class="btn">Copy current sections</button>
+        <button id="manual-apply" class="btn primary-outline">Apply manual sections</button>
+        <button id="manual-reset" class="btn link">Reset to bookmark sections</button>
+      </div>
+      <div id="manual-status" class="status-line"></div>
+    </details>
+  </section>
+
+  <!-- 3. Requirements -->
+  <section id="step-requirements" class="card" hidden>
+    <h2><span class="num">3</span>Client requirements</h2>
+    <div class="form-grid">
+      <div class="field span-2">
+        <span class="label">Splitting mode</span>
+        <div class="segmented" role="radiogroup" id="mode-group">
+          <label><input type="radio" name="mode" value="max_size" checked><span>Maximum Size</span></label>
+          <label><input type="radio" name="mode" value="num_volumes"><span>Number of Volumes</span></label>
+          <label><input type="radio" name="mode" value="both"><span>Both</span></label>
+        </div>
+      </div>
+      <div class="field" id="field-max-size">
+        <label class="label" for="max-size">Maximum size per volume</label>
+        <div class="input-group">
+          <input id="max-size" type="number" min="0.001" step="any" value="25">
+          <select id="size-unit"><option>KB</option><option selected>MB</option><option>GB</option></select>
+        </div>
+        <span class="hint" id="unit-note">1 MB = 1,000,000 bytes (decimal units are used throughout)</span>
+      </div>
+      <div class="field" id="field-volumes" hidden>
+        <label class="label" for="num-volumes">Number of volumes</label>
+        <input id="num-volumes" type="number" min="1" max="500" step="1" value="4">
+      </div>
+      <div class="field">
+        <label class="label" for="compression-mode">Compression</label>
+        <select id="compression-mode">
+          <option value="automatic" selected>Automatic (compress only when a volume is too large)</option>
+          <option value="lossless">Lossless optimisation only (never reduce quality)</option>
+          <option value="off">Off (report oversized volumes)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label" for="client-name">Client name (used in file names)</label>
+        <input id="client-name" type="text" maxlength="80" placeholder="ClientName">
+        <span class="hint" id="filename-preview"></span>
+      </div>
+    </div>
+
+    <div class="btn-row end">
+      <button id="plan-btn" class="btn primary large">PLAN VOLUMES</button>
+    </div>
+  </section>
+
+  <!-- 4. Plan -->
+  <section id="step-plan" class="card" hidden>
+    <h2><span class="num">4</span>Proposed volume plan</h2>
+    <div id="plan-warnings"></div>
+    <div id="plan-volumes" class="volume-grid"></div>
+    <div id="plan-totals" class="totals"></div>
+    <div class="btn-row end">
+      <button id="generate-btn" class="btn primary large">GENERATE VOLUMES</button>
+    </div>
+  </section>
+
+  <!-- 5. Progress -->
+  <section id="step-progress" class="card" hidden>
+    <h2><span class="num">5</span>Processing</h2>
+    <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+    <div id="progress-label" class="muted"></div>
+    <ol id="progress-log" class="log" aria-live="polite"></ol>
+    <div class="btn-row end"><button id="cancel-btn" class="btn danger-outline">Cancel</button></div>
+  </section>
+
+  <!-- 6. Results -->
+  <section id="step-results" class="card" hidden>
+    <h2><span class="num">6</span>Final report &amp; downloads</h2>
+    <div id="result-banner" class="banner"></div>
+    <div id="conflicts"></div>
+    <div class="table-wrap">
+      <table id="results-table" class="data">
+        <thead><tr>
+          <th>Volume</th><th>Sections</th><th class="r">Pages</th><th class="r">Final size</th>
+          <th>Compression</th><th class="c">Status</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <dl id="result-totals" class="summary-grid"></dl>
+    <div id="coverage-checks"></div>
+    <div id="volume-details"></div>
+    <div class="btn-row">
+      <a id="zip-btn" class="btn primary large" href="#">Download All Volumes as ZIP</a>
+      <a id="report-btn" class="btn" href="#" title="Optional: a text report of all checks, for your records">Download validation report (optional)</a>
+      <span class="spacer"></span>
+      <button id="new-plan-btn" class="btn">Change plan</button>
+      <button id="finish-btn" class="btn danger-outline">Finish &amp; delete files</button>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

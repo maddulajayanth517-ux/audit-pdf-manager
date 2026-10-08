@@ -1,0 +1,28 @@
+# Python environments and caches
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Documents, outputs and archives - never commit audit PDFs
+*.pdf
+*.zip
+*.log
+*.tmp
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
