@@ -13,10 +13,9 @@ Ladder (automatic mode):
            Ghostscript /ebook (if installed)
   Level 3  images 120 DPI/q60 (text kept), then rasterise pages at 150 DPI/q60
   Level 4  images 96 DPI/q50 (text kept), Ghostscript /screen, rasterise 120 DPI/q45
-  Level 5  images 72 DPI/q40 grey (text kept), rasterise 96 DPI/q35 grey
-  Level 6  emergency: rasterise 72 DPI/q25 grey, 72 DPI/q15 grey
-  Level 7  floor (still automatic): rasterise 60/48/36 DPI grey
-  Level 8  "try stronger compression" (user-triggered): rasterise 30/24 DPI grey
+  Level 5  images 110 DPI/q45 grey (text kept), rasterise 130 DPI/q50 grey
+  Level 7  readable floor: rasterise 110 DPI/q40 grey (never lower: text must stay legible)
+  Level 8  "try stronger compression" (user-triggered, may blur small text): rasterise 90/72 DPI grey
 
 Speed: level 0 is tried first (it is instant and often enough). The remaining levels are tried in
 batches - in parallel worker processes when a pool is given - and the GENTLEST attempt of a batch
@@ -113,7 +112,9 @@ class Strategy:
 
 # The strongest automatic step. The planner uses it to estimate the smallest size a volume can
 # reach, so moves between volumes can be checked against the required size.
-FLOOR_STRATEGY = Strategy(7, "raster", 36, 5, True)
+READABLE_MIN_DPI = 110   # below this, scanned/printed text becomes blurred and unreadable
+READABLE_MIN_QUALITY = 40  # below this, JPEG artefacts smear small text
+FLOOR_STRATEGY = Strategy(7, "raster", READABLE_MIN_DPI, READABLE_MIN_QUALITY, True)
 
 
 # ----------------------------------------------------------------------------- ladder
@@ -134,8 +135,8 @@ def build_ladder(cfg: dict, gs_available: bool) -> List[Strategy]:
     gray_ok = bool(cfg.get("allow_grayscale", True))
     raster_ok = bool(cfg.get("allow_rasterization", True)) and cfg.get("preserve_text", "preferred") != "required"
     use_gs = gs_available and bool(cfg.get("use_ghostscript", True))
-    min_dpi, max_dpi = int(cfg.get("min_dpi", 72)), int(cfg.get("max_dpi", 300))
-    q_lo, q_hi = int(cfg.get("jpeg_quality_min", 10)), int(cfg.get("jpeg_quality_max", 95))
+    min_dpi, max_dpi = int(cfg.get("min_dpi", READABLE_MIN_DPI)), int(cfg.get("max_dpi", 300))
+    q_lo, q_hi = int(cfg.get("jpeg_quality_min", READABLE_MIN_QUALITY)), int(cfg.get("jpeg_quality_max", 95))
 
     raw = [
         (2, "images", 200, 90, False, None),
@@ -147,13 +148,10 @@ def build_ladder(cfg: dict, gs_available: bool) -> List[Strategy]:
         (4, "images", 96, 50, False, None),
         (4, "ghostscript", None, None, False, "screen"),
         (4, "raster", 120, 45, False, None),
-        (5, "images", 72, 40, True, None),
-        (5, "raster", 96, 35, True, None),
-        (6, "raster", 72, 25, True, None),
-        (6, "raster", 72, 15, True, None),
-        # Size compliance beats quality: keep going automatically down to the floor strategy.
-        (7, "raster", 60, 12, True, None),
-        (7, "raster", 48, 8, True, None),
+        (5, "images", 110, 45, True, None),
+        (5, "raster", 130, 50, True, None),
+        # Never go below the readable floor: a volume that cannot reach the limit with readable
+        # pages is reported to the user instead of being turned into an unreadable blur.
         (7, FLOOR_STRATEGY.kind, FLOOR_STRATEGY.dpi, FLOOR_STRATEGY.quality, True, None),
     ]
     seen = set()
@@ -178,8 +176,8 @@ def build_ladder(cfg: dict, gs_available: bool) -> List[Strategy]:
 def stronger_ladder() -> List[Strategy]:
     """User explicitly asked for more than the automatic floor (text will be barely legible)."""
     return [
-        Strategy(8, "raster", 30, 5, True),
-        Strategy(8, "raster", 24, 5, True),
+        Strategy(8, "raster", 90, 30, True),
+        Strategy(8, "raster", 72, 25, True),
     ]
 
 

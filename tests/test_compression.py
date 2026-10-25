@@ -83,7 +83,7 @@ def test_ladder_modes_and_limits():
     assert [s.kind for s in build_ladder({**DEFAULTS, "mode": "lossless"}, False)] == ["plain", "optimize"]
     auto = build_ladder(DEFAULTS, False)
     assert [s.level for s in auto] == sorted(s.level for s in auto)
-    assert auto[-1].level == 7 and auto[-1].dpi == 36  # goes to the floor automatically
+    assert auto[-1].level == 7 and auto[-1].dpi == 110  # stops at the readable floor
     assert all(s.kind != "ghostscript" for s in auto)
     with_gs = build_ladder(DEFAULTS, True)
     assert any(s.kind == "ghostscript" for s in with_gs)
@@ -92,7 +92,7 @@ def test_ladder_modes_and_limits():
     assert all((s.quality or 99) >= 50 for s in clamped)
     no_gray = build_ladder({**DEFAULTS, "allow_grayscale": False}, False)
     assert not any(s.grayscale for s in no_gray)
-    assert all(s.level == 8 and s.dpi < 36 for s in stronger_ladder())
+    assert all(s.level == 8 and s.dpi < 110 for s in stronger_ladder())
 
 
 def test_bookmarks_survive_every_strategy(make, tmp_path):
@@ -106,14 +106,14 @@ def test_bookmarks_survive_every_strategy(make, tmp_path):
         doc.close()
 
 
-def test_large_reduction_reached_automatically(make, tmp_path):
-    """Size beats quality: a 90% reduction is reached without any user action (floor level)."""
+def test_reduction_stops_at_readable_floor(make, tmp_path):
+    """An impossible limit is never met by blurring pages: the result stays at the readable floor."""
     path = make("deep.pdf", [("Annexure X", 8, 1)], image_px=700)
-    target = int(path.stat().st_size * 0.10)
+    target = int(path.stat().st_size * 0.02)
     res, _ = _run(path, tmp_path, target)
-    assert res["achieved"], res["attempts"]
-    assert res["chosen"]["size"] <= target
-    assert res["chosen"]["level"] >= 5
+    assert not res["achieved"]
+    st = res["smallest"]["strategy"]
+    assert (st["dpi"] or 999) >= 110 and (st["quality"] or 99) >= 40
 
 
 def test_min_size_estimate_matches_real_floor(make, tmp_path):

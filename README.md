@@ -17,7 +17,7 @@ pypdf, optional Ghostscript). Document contents are never sent to an AI or any e
 | 1 | A protected section is never split | `volume_planner.py` treats each protected section as one unit; `_assert_plan_integrity` and the validator re-check it |
 | 2 | Original page order is never changed | Volumes are contiguous page ranges; partitioning never reorders units |
 | 3 | Oversized volumes are compressed automatically | `compression_engine.compress_volume` |
-| 4/5 | File size takes priority over visual quality | The compression ladder goes down to 72 DPI greyscale raster (and lower on request) |
+| 4/5 | File size takes priority over visual quality | The compression ladder stops at a readable floor (110 DPI greyscale raster); lower only on request |
 | 6 | Actual file size is measured, not estimated | Every attempt is written to disk and `stat()`-ed |
 | 7 | If the limit is impossible, report it and keep the section whole | Volume status `OVER_LIMIT`, user chooses what to do |
 | 8 | No lost, duplicated or corrupted pages | Validator: page count, page sizes, text/visual fingerprints, two independent PDF parsers, coverage check across volumes |
@@ -58,80 +58,6 @@ python3 -m venv .venv
 # or simply: ./run.sh
 ```
 
-### Docker
-
-```bash
-docker compose up --build
-# open http://127.0.0.1:8000
-```
-
-The image already contains Ghostscript. Temporary files are kept in a RAM-backed `tmpfs`, so
-nothing is written to the host disk. Raise the `tmpfs` size in `docker-compose.yml` for very large PDFs.
-
----
-
-## Deploying online
-
-The app is a normal Docker web service. It reads the port from `$PORT`, and the repository contains
-ready-made configuration for **Render** (`render.yaml`) and **Railway** (`railway.json`). Both
-deploy straight from this GitHub repository and redeploy on every push.
-
-**Always set `APP_PASSWORD`** when the app is reachable from the internet. Users then log in with
-username `audit` (or `APP_USERNAME`) and that password.
-
-### Render (free plan, no card)
-
-1. Sign in at <https://dashboard.render.com> with GitHub.
-2. **New → Blueprint**, select this repository, and enter a strong `APP_PASSWORD` when asked.
-3. Wait for the build (about 5–10 minutes the first time). Open the `https://audit-pdf-manager-….onrender.com`
-   link and share it, with the password.
-
-Free-plan limits: 512 MB RAM and a shared CPU, so the app runs in **low-memory mode** (one job at a
-time, one process) and uploads are capped at 60 MB (`MAX_UPLOAD_MB`). The service sleeps after 15
-minutes without use, and the first visit after that takes about a minute. For 100 MB reports, use a
-paid instance (2 GB+ RAM) and raise `MAX_UPLOAD_MB`.
-
-### Railway (trial credit, then usage-based)
-
-1. Sign in at <https://railway.com> with GitHub.
-2. **New Project → Deploy from GitHub repo**, and select this repository. `railway.json` makes it
-   build the Dockerfile.
-3. In the service, open **Variables** and add `APP_PASSWORD`. Then go to **Settings → Networking →
-   Generate Domain** to get the public link.
-
-Railway's free allowance is a small monthly credit, so heavy compression of large PDFs can use it up.
-Watch **Usage** in the dashboard.
-
-### Oracle Cloud Always Free (free, large PDFs)
-
-Oracle's Always Free tier includes an ARM server with **4 CPUs, 24 GB RAM and 200 GB disk**, enough
-for 100 MB+ reports and many jobs. Sign-up needs a card for identity verification only.
-
-1. Sign up at <https://signup.cloud.oracle.com> (choose **Hyderabad** or **Mumbai** as home region).
-2. **Compute → Instances → Create instance**:
-   - Image: **Ubuntu 22.04 or 24.04**. Shape: **Ampere VM.Standard.A1.Flex**, **4 OCPU / 24 GB**
-     (it shows *Always Free-eligible*).
-   - Add your SSH key, or let Oracle generate one and download it. Click **Create**.
-   - If you get "Out of capacity", try another availability domain or try again later.
-3. Allow web traffic: go to the instance's **Subnet → Security List → Add Ingress Rules**, with source
-   `0.0.0.0/0` and TCP destination ports **80** and **443**.
-4. Connect with SSH (`ssh ubuntu@<public-ip>`) and run:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/maddulajayanth517-ux/audit-pdf-manager/main/deploy/setup-server.sh | bash
-   ```
-   It installs Docker, opens the firewall, asks for the login password, and starts the app behind
-   HTTPS at `https://<ip-with-dashes>.sslip.io`, a free address that needs no domain purchase.
-5. To update after new commits, run the same command again.
-
-### Your own server (Docker)
-
-```bash
-docker build -t audit-pdf-manager .
-docker run -d -p 8000:8000 -e APP_PASSWORD='choose-a-strong-one' --restart unless-stopped audit-pdf-manager
-```
-
-Or use `docker compose up -d --build` with an `.env` file. Put HTTPS in front with a reverse
-proxy (for example Caddy).
 
 ## Ghostscript (optional)
 
@@ -146,7 +72,6 @@ is installed it is detected automatically and used as an extra text-preserving s
 | **Debian/Ubuntu** | `sudo apt-get install ghostscript` |
 | **RHEL/Fedora** | `sudo dnf install ghostscript` |
 | **macOS** | `brew install ghostscript` |
-| **Docker** | Already included (`apt-get install ghostscript` in the `Dockerfile`). Remove that line if you do not want it. |
 
 ---
 
@@ -227,10 +152,9 @@ attempt whose **actual file size** is within the limit is accepted:
 | 2 | Image recompression 200 DPI/q90 → 150/q80 → 150/q70, then Ghostscript `/ebook` | yes |
 | 3 | Images 120 DPI/q60, then **rasterise** pages 150 DPI/q60 | yes, then no |
 | 4 | Images 96 DPI/q50, Ghostscript `/screen`, rasterise 120 DPI/q45 | yes, then no |
-| 5 | Images 72 DPI/q40 greyscale, rasterise 96 DPI/q35 greyscale | yes, then no |
-| 6 | **Emergency**: rasterise 72 DPI/q25 then q15, greyscale | no |
-| 7 | **Floor** (still automatic): rasterise 60 → 48 → 36 DPI greyscale, JPEG 12 → 5 | no |
-| 8 | *Try stronger compression* (only on request): rasterise 30 / 24 DPI greyscale | no |
+| 5 | Images 110 DPI/q45 greyscale, rasterise 130 DPI/q50 greyscale | yes, then no |
+| 7 | **Readable floor**: rasterise 110 DPI greyscale, JPEG 40 (never lower automatically) | no |
+| 8 | *Try stronger compression* (only on request): rasterise 90 / 72 DPI greyscale | no |
 
 At each level the text-preserving variant is tried before rasterisation. When a result is still
 more than twice the target, the gentler variants of that level are skipped. The last emergency

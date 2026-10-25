@@ -13,11 +13,11 @@ class CompressionSettings(BaseModel):
     # lossless:  always apply lossless structure optimisation, never degrade quality
     # off:       never compress (oversized volumes are reported)
     mode: Literal["automatic", "lossless", "off"] = "automatic"
-    # Defaults allow the full automatic ladder (down to 36 DPI greyscale, JPEG 5): the required
-    # file size has priority over quality. Raise these to forbid the strongest steps.
-    min_dpi: int = Field(36, ge=36, le=300)
+    # Defaults allow the full automatic ladder (down to the readable floor: 110 DPI greyscale, JPEG 40).
+    # Pages are never compressed into an unreadable blur; lower these only if you accept that.
+    min_dpi: int = Field(110, ge=36, le=300)
     max_dpi: int = Field(300, ge=72, le=600)
-    jpeg_quality_min: int = Field(5, ge=5, le=95)
+    jpeg_quality_min: int = Field(40, ge=5, le=95)
     jpeg_quality_max: int = Field(95, ge=10, le=100)
     allow_grayscale: bool = True
     allow_rasterization: bool = True
@@ -26,9 +26,9 @@ class CompressionSettings(BaseModel):
     use_ghostscript: bool = True
 
     def reaches_floor(self) -> bool:
-        """True if these settings allow the strongest automatic step (36 DPI greyscale raster)."""
+        """True if these settings allow the strongest automatic step (110 DPI greyscale raster)."""
         return (self.mode == "automatic" and self.allow_rasterization and self.allow_grayscale
-                and self.preserve_text != "required" and self.min_dpi <= 36 and self.jpeg_quality_min <= 5)
+                and self.preserve_text != "required" and self.min_dpi <= 110 and self.jpeg_quality_min <= 40)
 
     @model_validator(mode="after")
     def _check_ranges(self):

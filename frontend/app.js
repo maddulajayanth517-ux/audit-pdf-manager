@@ -542,7 +542,7 @@
           "The section has NOT been split. Choose how to proceed:"));
       const row = h("div", { class: "btn-row" });
       row.appendChild(h("button", { class: "btn primary", onclick: () => resolve(v.index, "stronger"),
-        title: "Rasterise pages at 30–24 DPI greyscale. Text will be barely legible." }, "Try stronger compression"));
+        title: "Rasterise pages at 90–72 DPI greyscale. Small text may become hard to read." }, "Try stronger compression"));
       row.appendChild(h("button", { class: "btn", onclick: () => resolve(v.index, "accept_smallest") },
         `Allow this volume to exceed the limit (smallest, ${fmtSize(v.smallest_bytes)})`));
       if (v.original_quality_bytes) {
@@ -612,7 +612,7 @@
 
   async function resolve(index, action) {
     if (action === "stronger" &&
-        !confirm("Stronger compression goes below the automatic floor: every page is rasterised at 30–24 DPI greyscale. Text will not be searchable and may be hard to read. Continue?")) return;
+        !confirm("Stronger compression goes below the automatic floor: every page is rasterised at 90–72 DPI greyscale. Text will not be searchable and may be hard to read. Continue?")) return;
     try {
       const st = await api("POST", `/api/jobs/${state.jobId}/volumes/${index}/resolve`, { action });
       if (action === "stronger") {
